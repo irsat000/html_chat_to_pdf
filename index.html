@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HTML Chat to PDF</title>
+  <script src="https://unpkg.com/jspdf@latest/dist/jspdf.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #12161d;
+      --surface: #1a212b;
+      --surface-raised: #202834;
+      --border: #2a323f;
+      --text: #e9ecf1;
+      --text-dim: #8b93a3;
+      --accent: #e3a94b;
+      --accent-dim: #8a6a34;
+      --ok: #6ebf8b;
+      --err: #e0666a;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "Segoe UI", Arial, sans-serif;
+    }
+
+    body {
+      padding: 56px 20px 80px;
+      display: flex;
+      justify-content: center;
+    }
+
+    main {
+      width: 100%;
+      max-width: 620px;
+    }
+
+    h1 {
+      font-family: Georgia, "Iowan Old Style", serif;
+      font-weight: 400;
+      font-size: 32px;
+      letter-spacing: 0.2px;
+      margin: 0 0 6px;
+      color: var(--text);
+    }
+
+    h1 em {
+      color: var(--accent);
+      font-style: normal;
+    }
+
+    p.lede {
+      color: var(--text-dim);
+      font-size: 14.5px;
+      line-height: 1.6;
+      margin: 0 0 36px;
+      max-width: 48ch;
+    }
+
+    .dropzone {
+      border: 1.5px dashed var(--border);
+      border-radius: 10px;
+      padding: 36px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease;
+      background: var(--surface);
+    }
+
+    .dropzone:hover,
+    .dropzone.dragover {
+      border-color: var(--accent-dim);
+      background: var(--surface-raised);
+    }
+
+    .dropzone svg {
+      opacity: 0.55;
+      margin-bottom: 10px;
+    }
+
+    .dropzone .primary {
+      font-size: 15px;
+      color: var(--text);
+    }
+
+    .dropzone .primary strong {
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .dropzone .secondary {
+      font-size: 12.5px;
+      color: var(--text-dim);
+      margin-top: 4px;
+    }
+
+    input[type="file"] {
+      display: none;
+    }
+
+    .queue {
+      margin-top: 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    .row .icon {
+      width: 30px;
+      height: 30px;
+      border-radius: 6px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--surface-raised);
+      font-size: 14px;
+    }
+
+    .row .info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .row .name {
+      font-family: ui-monospace, "SF Mono", Consolas, monospace;
+      font-size: 12.5px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .row .status {
+      font-size: 12px;
+      margin-top: 2px;
+    }
+
+    .row .status.working {
+      color: var(--accent);
+    }
+
+    .row .status.done {
+      color: var(--ok);
+    }
+
+    .row .status.error {
+      color: var(--err);
+    }
+
+    .row .status.queued {
+      color: var(--text-dim);
+    }
+
+    .row a.dl {
+      flex-shrink: 0;
+      font-size: 12.5px;
+      color: var(--bg);
+      background: var(--accent);
+      padding: 6px 12px;
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .row a.dl:hover {
+      opacity: 0.9;
+    }
+
+    .actions {
+      margin-top: 24px;
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    button.all-btn {
+      font-size: 13px;
+      background: transparent;
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      padding: 8px 14px;
+      border-radius: 7px;
+      cursor: pointer;
+    }
+
+    button.all-btn:hover {
+      color: var(--text);
+      border-color: var(--accent-dim);
+    }
+
+    footer {
+      display: none;
+      margin-top: 48px;
+      padding-top: 18px;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--text-dim);
+      line-height: 1.6;
+    }
+
+    footer strong {
+      color: var(--text);
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <h1>Chat archive → <em>PDF</em></h1>
+    <p class="lede">Drop in one or more saved chat pages (the standalone <code>.html</code> exports) to turn them into
+      readable PDFs, asterisk-emphasis and all. Everything happens in this tab — nothing is uploaded anywhere.</p>
+
+    <div class="dropzone" id="dropzone">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
+      </svg>
+      <div class="primary">Drop saved chat files here, or <strong>browse</strong></div>
+      <div class="secondary">Accepts multiple .html exports at once</div>
+      <input type="file" id="fileInput" accept=".html,.htm" multiple>
+    </div>
+
+    <div class="queue" id="queue"></div>
+
+    <div class="actions" id="actions" style="display:none;">
+      <button class="all-btn" id="downloadAllBtn">Download all as PDFs</button>
+    </div>
+
+    <footer>
+      <strong>How it reads your file:</strong> it looks for the chat data embedded in the saved page (the same JSON your
+      chat-export extension writes into it), then lays out each message as a styled bubble — <em>*single*</em> asterisks
+      become italic, <strong>**double**</strong> become bold, and <strong><em>***triple***</em></strong> become
+      bold-italic, matching how the saved page itself displays them.
+    </footer>
+  </main>
+
+  <script>
+    (() => {
+      const { jsPDF } = window.jspdf;
+
+      const dropzone = document.getElementById('dropzone');
+      const fileInput = document.getElementById('fileInput');
+      const queueEl = document.getElementById('queue');
+      const actionsEl = document.getElementById('actions');
+      const downloadAllBtn = document.getElementById('downloadAllBtn');
+
+      const jobs = []; // { file, rowEl, statusEl, blob, name, state }
+
+      dropzone.addEventListener('click', () => fileInput.click());
+      dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+      dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+      dropzone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropzone.classList.remove('dragover');
+        handleFiles(e.dataTransfer.files);
+      });
+      fileInput.addEventListener('change', () => {
+        handleFiles(fileInput.files);
+        fileInput.value = '';
+      });
+
+      downloadAllBtn.addEventListener('click', () => {
+        jobs.filter(j => j.state === 'done').forEach(j => {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(j.blob);
+          a.download = j.name;
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 20000);
+        });
+      });
+
+      function handleFiles(fileList) {
+        Array.from(fileList).forEach((file) => {
+          const row = document.createElement('div');
+          row.className = 'row';
+          row.innerHTML = `
+        <div class="icon">📄</div>
+        <div class="info">
+          <div class="name">${escapeHTML(file.name)}</div>
+          <div class="status queued">Queued…</div>
+        </div>
+      `;
+          queueEl.appendChild(row);
+          const job = { file, rowEl: row, statusEl: row.querySelector('.status'), state: 'queued' };
+          jobs.push(job);
+          processJob(job);
+        });
+      }
+
+      async function processJob(job) {
+        setStatus(job, 'working', 'Reading…');
+        try {
+          const text = await job.file.text();
+          const historyData = extractHistoryData(text);
+          setStatus(job, 'working', 'Rendering PDF…');
+          const { blob, name } = await buildPdf(historyData, job.file.name);
+          job.blob = blob;
+          job.name = name;
+          job.state = 'done';
+          setStatus(job, 'done', 'Done');
+          addDownloadLink(job);
+          actionsEl.style.display = 'flex';
+        } catch (err) {
+          console.error(err);
+          job.state = 'error';
+          setStatus(job, 'error', err.message || 'Couldn\u2019t read this file');
+        }
+      }
+
+      function setStatus(job, kind, text) {
+        job.statusEl.className = 'status ' + kind;
+        job.statusEl.textContent = text;
+      }
+
+      function addDownloadLink(job) {
+        const link = document.createElement('a');
+        link.className = 'dl';
+        link.textContent = 'Download';
+        link.href = URL.createObjectURL(job.blob);
+        link.download = job.name;
+        job.rowEl.appendChild(link);
+      }
+
+      function escapeHTML(str) {
+        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      }
+
+      // ---- Extract the embedded chat JSON from a saved-chat HTML export ----
+      function extractHistoryData(html) {
+        const match = html.match(/historyData\s*=\s*`([\s\S]*?)`/);
+        if (!match) {
+          throw new Error('No chat data found in this file');
+        }
+        let raw = match[1];
+        let data;
+        try {
+          data = JSON.parse(decodeURIComponent(raw));
+        } catch (e1) {
+          try {
+            data = JSON.parse(raw);
+          } catch (e2) {
+            throw new Error('Couldn\u2019t parse chat data');
+          }
+        }
+        if (!data || !Array.isArray(data.history)) {
+          throw new Error('Unrecognized chat data format');
+        }
+        return data;
+      }
+
+      // ---- *text* / **text** / ***text*** -> italic / bold / bold-italic runs ----
+      function parseRuns(raw) {
+        const runs = [];
+        const regex = /\*\*\*([\s\S]+?)\*\*\*|\*\*([\s\S]+?)\*\*|\*([\s\S]+?)\*/g;
+        let lastIndex = 0, match;
+        while ((match = regex.exec(raw)) !== null) {
+          if (match.index > lastIndex) runs.push({ text: raw.slice(lastIndex, match.index), style: 'normal' });
+          if (match[1] !== undefined) runs.push({ text: match[1], style: 'bolditalic' });
+          else if (match[2] !== undefined) runs.push({ text: match[2], style: 'bold' });
+          else runs.push({ text: match[3], style: 'italic' });
+          lastIndex = regex.lastIndex;
+        }
+        if (lastIndex < raw.length) runs.push({ text: raw.slice(lastIndex), style: 'normal' });
+        return runs;
+      }
+
+      const STYLE_COLOR = { normal: 20, bold: 0, italic: 80, bolditalic: 60 };
+
+      function circleCrop(dataUrl, size) {
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = size; canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            ctx.beginPath();
+            ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
+            ctx.closePath();
+            ctx.clip();
+            ctx.drawImage(img, 0, 0, size, size);
+            resolve(canvas.toDataURL('image/png'));
+          };
+          img.onerror = () => resolve(null);
+          img.src = dataUrl;
+        });
+      }
+
+      function solidCircle(hexColor, size) {
+        const canvas = document.createElement('canvas');
+        canvas.width = size; canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = hexColor;
+        ctx.beginPath();
+        ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
+        ctx.fill();
+        return canvas.toDataURL('image/png');
+      }
+
+      function hexToRgb(hex) {
+        const v = parseInt(hex.slice(1), 16);
+        return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+      }
+
+      function formatDate(dateValue) {
+        if (!dateValue) return '';
+        const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+        const d = new Date(dateValue);
+        if (isNaN(d.getTime())) return '';
+        return `${d.getFullYear()} ${months[d.getMonth()]} ${String(d.getDate()).padStart(2, '0')} - ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      }
+
+      async function buildPdf(historyData, originalFileName) {
+        const PAGE_W = 595.28, PAGE_H = 841.89; // A4 pt
+        const MARGIN = 40;
+        const AVATAR_SIZE = 26;
+        const AVATAR_GAP = 8;
+        const BUBBLE_PADDING = 8;
+        const LINE_HEIGHT = 13;
+        const NAME_HEIGHT = 14;
+        const NAME_TO_TEXT_GAP = 8;
+        const MSG_GAP = 8;
+        const FONT_SIZE = 10;
+        const BUBBLE_X = MARGIN + AVATAR_SIZE + AVATAR_GAP;
+        const BUBBLE_MAX_W = PAGE_W - BUBBLE_X - MARGIN;
+        const PALETTE = ['#f5f5f7', '#e6f4ea', '#e8f0fe', '#fdecea', '#f3e8fd', '#fff8e1'];
+        const CANVAS_PX = 128;
+
+        const title = historyData.title || originalFileName.replace(/\.html?$/i, '');
+        const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+        doc.setFont('helvetica', 'normal');
+
+        const buildLines = (rawMessage, maxWidth) => {
+          doc.setFontSize(FONT_SIZE);
+          const lines = [];
+          String(rawMessage ?? '').split('\n').forEach((paragraph) => {
+            const words = [];
+            parseRuns(paragraph).forEach((run) => {
+              run.text.split(/(\s+)/).filter(Boolean).forEach((w) => words.push({ text: w, style: run.style }));
+            });
+            let line = [], width = 0;
+            words.forEach((word) => {
+              doc.setFont('helvetica', word.style === 'normal' ? 'normal' : word.style);
+              const w = doc.getTextWidth(word.text);
+              if (width + w > maxWidth && line.length && word.text.trim() !== '') {
+                lines.push(line);
+                line = [];
+                width = 0;
+              }
+              if (!(line.length === 0 && word.text.trim() === '')) {
+                line.push(word);
+                width += w;
+              }
+            });
+            lines.push(line);
+          });
+          return lines;
+        };
+
+        let y = MARGIN;
+        const ensureSpace = (height) => {
+          if (y + height > PAGE_H - MARGIN) {
+            doc.addPage();
+            y = MARGIN;
+          }
+        };
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(16);
+        doc.setTextColor(0);
+        doc.text(title, MARGIN, y);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(140);
+        doc.text(`Exported ${new Date().toLocaleString()}`, MARGIN, y + 14);
+        doc.setTextColor(0);
+        y += 34;
+
+        const sessions = historyData.history.filter(h => h.content && h.content.length);
+
+        for (let s = 0; s < sessions.length; s++) {
+          const chat = sessions[s];
+
+          if (s > 0) {
+            ensureSpace(30);
+            doc.setDrawColor(210);
+            doc.line(MARGIN, y, PAGE_W - MARGIN, y);
+            y += 16;
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(11);
+            doc.setTextColor(0);
+            doc.text(`Session ${s + 1}`, MARGIN, y);
+            const dateLabel = formatDate(chat.create_date);
+            if (dateLabel) {
+              doc.setFont('helvetica', 'normal');
+              doc.setFontSize(9);
+              doc.setTextColor(140);
+              doc.text(dateLabel, MARGIN + 70, y);
+            }
+            doc.setTextColor(0);
+            y += 20;
+          }
+
+          // Pre-render avatars for this session's participants
+          const avatarCache = new Map();
+          await Promise.all((chat.participants || []).map(async (p) => {
+            if (p.avatar) {
+              const cropped = await circleCrop(p.avatar, CANVAS_PX);
+              if (cropped) avatarCache.set(p.id, cropped);
+            }
+          }));
+          const humanPlaceholder = solidCircle('#5157cf', CANVAS_PX);
+          const charPlaceholder = solidCircle('#e20909', CANVAS_PX);
+
+          (chat.content || []).forEach((msg) => {
+            const p = (chat.participants || []).find(pp => pp.id === msg.author);
+            const name = p ? p.name : "Unknown";
+            const isHuman = p ? !!p.is_human : false;
+
+            const lines = buildLines(msg.message, BUBBLE_MAX_W - BUBBLE_PADDING * 2);
+            const bubbleHeight = NAME_HEIGHT + Math.max(lines.length, 1) * LINE_HEIGHT + BUBBLE_PADDING * 2;
+            const blockHeight = Math.max(bubbleHeight, AVATAR_SIZE) + MSG_GAP;
+
+            ensureSpace(blockHeight);
+
+            const avImg = avatarCache.get(msg.author) || (isHuman ? humanPlaceholder : charPlaceholder);
+            try { doc.addImage(avImg, 'PNG', MARGIN, y, AVATAR_SIZE, AVATAR_SIZE); } catch (e) { }
+
+            const bubbleColorHex = isHuman ? '#eef0ff' : PALETTE[msg.author % PALETTE.length];
+            doc.setFillColor(...hexToRgb(bubbleColorHex));
+            doc.roundedRect(BUBBLE_X, y, BUBBLE_MAX_W, bubbleHeight, 6, 6, 'F');
+
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(9);
+            doc.setTextColor(90);
+            doc.text(name, BUBBLE_X + BUBBLE_PADDING, y + BUBBLE_PADDING + 8);
+
+            doc.setFontSize(FONT_SIZE);
+            let ly = y + BUBBLE_PADDING + NAME_HEIGHT + NAME_TO_TEXT_GAP - 4;
+            lines.forEach((line) => {
+              let lx = BUBBLE_X + BUBBLE_PADDING;
+              line.forEach((word) => {
+                doc.setFont('helvetica', word.style === 'normal' ? 'normal' : word.style);
+                doc.setTextColor(STYLE_COLOR[word.style]);
+                doc.text(word.text, lx, ly);
+                lx += doc.getTextWidth(word.text);
+              });
+              ly += LINE_HEIGHT;
+            });
+            doc.setTextColor(0);
+
+            y += blockHeight;
+          });
+        }
+
+        const blob = doc.output('blob');
+        const safeTitle = title.replace(/[\\/:*?"<>|]+/g, '_').replaceAll(' ', '_');
+        return { blob, name: `${safeTitle}.pdf` };
+      }
+    })();
+  </script>
+</body>
+
+</html>

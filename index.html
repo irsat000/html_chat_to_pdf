@@ -5,9 +5,38 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HTML Chat to PDF</title>
-  <script src="https://unpkg.com/jspdf@latest/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <style>
     :root {
+      /* light defaults */
+      --bg: #f5f5f7;
+      --surface: #ffffff;
+      --surface-raised: #eef0f3;
+      --border: #d7dbe0;
+      --text: #1a1d23;
+      --text-dim: #6b7280;
+      --accent: #b8860b;
+      --accent-dim: #d9b055;
+      --ok: #2f9e5c;
+      --err: #c0392b;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #12161d;
+        --surface: #1a212b;
+        --surface-raised: #202834;
+        --border: #2a323f;
+        --text: #e9ecf1;
+        --text-dim: #8b93a3;
+        --accent: #e3a94b;
+        --accent-dim: #8a6a34;
+        --ok: #6ebf8b;
+        --err: #e0666a;
+      }
+    }
+
+    :root[data-theme="dark"] {
       --bg: #12161d;
       --surface: #1a212b;
       --surface-raised: #202834;
@@ -209,7 +238,6 @@
     }
 
     footer {
-      display: none;
       margin-top: 48px;
       padding-top: 18px;
       border-top: 1px solid var(--border);
@@ -228,14 +256,15 @@
   <main>
     <h1>Chat archive → <em>PDF</em></h1>
     <p class="lede">Drop in one or more saved chat pages (the standalone <code>.html</code> exports) to turn them into
-      readable PDFs, asterisk-emphasis and all. Everything happens in this tab — nothing is uploaded anywhere.</p>
+      readable PDFs, asterisk-emphasis and emoji all included. Everything happens in this tab — nothing is uploaded
+      anywhere. Files are converted one at a time to keep the tab responsive on large chats.</p>
 
     <div class="dropzone" id="dropzone">
       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
       </svg>
       <div class="primary">Drop saved chat files here, or <strong>browse</strong></div>
-      <div class="secondary">Accepts multiple .html exports at once</div>
+      <div class="secondary">Accepts multiple .html exports at once (processed one by one)</div>
       <input type="file" id="fileInput" accept=".html,.htm" multiple>
     </div>
 
@@ -246,10 +275,11 @@
     </div>
 
     <footer>
-      <strong>How it reads your file:</strong> it looks for the chat data embedded in the saved page (the same JSON your
-      chat-export extension writes into it), then lays out each message as a styled bubble — <em>*single*</em> asterisks
-      become italic, <strong>**double**</strong> become bold, and <strong><em>***triple***</em></strong> become
-      bold-italic, matching how the saved page itself displays them.
+      <strong>How it reads your file:</strong> it looks for the chat data embedded in the saved page (the same JSON
+      your chat-export extension writes into it), then lays out each message as a white message bubble —
+      <em>*single*</em> asterisks become italic, <strong>**double**</strong> become bold, and
+      <strong><em>***triple***</em></strong> become bold-italic, matching how the saved page itself displays them.
+      Emoji are rendered as small images rather than text, since PDF's built-in fonts can't draw them reliably.
     </footer>
   </main>
 
@@ -264,6 +294,7 @@
       const downloadAllBtn = document.getElementById('downloadAllBtn');
 
       const jobs = []; // { file, rowEl, statusEl, blob, name, state }
+      let jobQueue = Promise.resolve(); // serializes PDF builds so the tab stays responsive
 
       dropzone.addEventListener('click', () => fileInput.click());
       dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
@@ -302,7 +333,10 @@
           queueEl.appendChild(row);
           const job = { file, rowEl: row, statusEl: row.querySelector('.status'), state: 'queued' };
           jobs.push(job);
-          processJob(job);
+          // Chain onto the shared queue instead of firing all jobs at once —
+          // running several full PDF builds concurrently is what was bogging
+          // the browser down on multi-file drops.
+          jobQueue = jobQueue.then(() => processJob(job)).catch(() => {});
         });
       }
 
@@ -312,7 +346,7 @@
           const text = await job.file.text();
           const historyData = extractHistoryData(text);
           setStatus(job, 'working', 'Rendering PDF…');
-          const { blob, name } = await buildPdf(historyData, job.file.name);
+          const { blob, name } = await buildPdf(historyData, job.file.name, (progressText) => setStatus(job, 'working', progressText));
           job.blob = blob;
           job.name = name;
           job.state = 'done';
@@ -368,7 +402,7 @@
       }
 
       // ---- *text* / **text** / ***text*** -> italic / bold / bold-italic runs ----
-      function parseRuns(raw) {
+      function parseStyleRuns(raw) {
         const runs = [];
         const regex = /\*\*\*([\s\S]+?)\*\*\*|\*\*([\s\S]+?)\*\*|\*([\s\S]+?)\*/g;
         let lastIndex = 0, match;
@@ -383,7 +417,50 @@
         return runs;
       }
 
-      const STYLE_COLOR = { normal: 20, bold: 0, italic: 80, bolditalic: 60 };
+      // Darkened so italics stay readable on light/white bubbles (was mid-grey 80)
+      const STYLE_COLOR = { normal: 20, bold: 0, italic: 35, bolditalic: 15 };
+
+      // ---- Emoji handling ----
+      // jsPDF's core fonts (helvetica etc.) have no emoji glyphs: asking doc.text()
+      // to draw one produces mojibake AND a wrong width, which is what caused both
+      // the garbled-symbol bug and the text overflowing/overlapping in bubbles.
+      // Instead we rasterize each emoji once (canvas can draw color emoji via the
+      // OS emoji font), cache the PNG, and place it as a fixed-size image, so line
+      // wrapping has an exact width to work with.
+      const EMOJI_REGEX = /(\p{Regional_Indicator}{2}|\p{Extended_Pictographic}(?:\p{Emoji_Modifier})?\uFE0F?(?:\u200D\p{Extended_Pictographic}(?:\p{Emoji_Modifier})?\uFE0F?)*|\p{Emoji_Presentation})/gu;
+
+      const emojiImageCache = new Map();
+      function getEmojiImage(str) {
+        if (emojiImageCache.has(str)) return emojiImageCache.get(str);
+        const size = 64;
+        const canvas = document.createElement('canvas');
+        canvas.width = size; canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, size, size);
+        ctx.font = `${Math.round(size * 0.82)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        let dataUrl = null;
+        try {
+          ctx.fillText(str, size / 2, size / 2 + size * 0.04);
+          dataUrl = canvas.toDataURL('image/png');
+        } catch (e) { dataUrl = null; }
+        emojiImageCache.set(str, dataUrl);
+        return dataUrl;
+      }
+
+      function splitIntoTextAndEmoji(text, style) {
+        const tokens = [];
+        EMOJI_REGEX.lastIndex = 0;
+        let lastIndex = 0, match;
+        while ((match = EMOJI_REGEX.exec(text)) !== null) {
+          if (match.index > lastIndex) tokens.push({ kind: 'text', text: text.slice(lastIndex, match.index), style });
+          tokens.push({ kind: 'emoji', text: match[0], style });
+          lastIndex = EMOJI_REGEX.lastIndex;
+        }
+        if (lastIndex < text.length) tokens.push({ kind: 'text', text: text.slice(lastIndex), style });
+        return tokens;
+      }
 
       function circleCrop(dataUrl, size) {
         return new Promise((resolve) => {
@@ -415,11 +492,6 @@
         return canvas.toDataURL('image/png');
       }
 
-      function hexToRgb(hex) {
-        const v = parseInt(hex.slice(1), 16);
-        return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
-      }
-
       function formatDate(dateValue) {
         if (!dateValue) return '';
         const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -428,7 +500,7 @@
         return `${d.getFullYear()} ${months[d.getMonth()]} ${String(d.getDate()).padStart(2, '0')} - ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
       }
 
-      async function buildPdf(historyData, originalFileName) {
+      async function buildPdf(historyData, originalFileName, onProgress) {
         const PAGE_W = 595.28, PAGE_H = 841.89; // A4 pt
         const MARGIN = 40;
         const AVATAR_SIZE = 26;
@@ -439,34 +511,67 @@
         const NAME_TO_TEXT_GAP = 8;
         const MSG_GAP = 8;
         const FONT_SIZE = 10;
+        const EMOJI_SIZE = FONT_SIZE * 1.2; // rendered emoji image side length, in pt
+        const EMOJI_PAD = 1;
         const BUBBLE_X = MARGIN + AVATAR_SIZE + AVATAR_GAP;
         const BUBBLE_MAX_W = PAGE_W - BUBBLE_X - MARGIN;
-        const PALETTE = ['#f5f5f7', '#e6f4ea', '#e8f0fe', '#fdecea', '#f3e8fd', '#fff8e1'];
         const CANVAS_PX = 128;
+        const PAGE_BG = [245, 248, 250]; // #f5f8fa
 
         const title = historyData.title || originalFileName.replace(/\.html?$/i, '');
         const doc = new jsPDF({ unit: 'pt', format: 'a4' });
         doc.setFont('helvetica', 'normal');
 
+        const paintPageBackground = () => {
+          doc.setFillColor(...PAGE_BG);
+          doc.rect(0, 0, PAGE_W, PAGE_H, 'F');
+        };
+
+        const drawBubble = (x, y, w, h) => {
+          // Faked drop-shadow (jsPDF has no real box-shadow): a soft, low-opacity
+          // dark rect offset slightly below the bubble, then the white bubble on top.
+          try {
+            doc.setGState(new doc.GState({ opacity: 0.1 }));
+            doc.setFillColor(0, 0, 0);
+            doc.roundedRect(x, y + 2, w, h, 6, 6, 'F');
+            doc.setGState(new doc.GState({ opacity: 1 }));
+          } catch (e) { /* GState unsupported in some jsPDF builds — skip the shadow */ }
+          doc.setFillColor(255, 255, 255);
+          doc.roundedRect(x, y, w, h, 6, 6, 'F');
+        };
+
         const buildLines = (rawMessage, maxWidth) => {
           doc.setFontSize(FONT_SIZE);
           const lines = [];
           String(rawMessage ?? '').split('\n').forEach((paragraph) => {
-            const words = [];
-            parseRuns(paragraph).forEach((run) => {
-              run.text.split(/(\s+)/).filter(Boolean).forEach((w) => words.push({ text: w, style: run.style }));
+            const tokens = [];
+            parseStyleRuns(paragraph).forEach((run) => {
+              run.text.split(/(\s+)/).filter(Boolean).forEach((chunk) => {
+                if (/^\s+$/.test(chunk)) {
+                  tokens.push({ kind: 'space', text: chunk, style: run.style });
+                } else {
+                  tokens.push(...splitIntoTextAndEmoji(chunk, run.style));
+                }
+              });
             });
+
             let line = [], width = 0;
-            words.forEach((word) => {
-              doc.setFont('helvetica', word.style === 'normal' ? 'normal' : word.style);
-              const w = doc.getTextWidth(word.text);
-              if (width + w > maxWidth && line.length && word.text.trim() !== '') {
+            tokens.forEach((tok) => {
+              let w;
+              if (tok.kind === 'emoji') {
+                getEmojiImage(tok.text); // warm the cache
+                w = EMOJI_SIZE + EMOJI_PAD;
+              } else {
+                doc.setFont('helvetica', tok.style === 'normal' ? 'normal' : tok.style);
+                w = doc.getTextWidth(tok.text);
+              }
+              if (width + w > maxWidth && line.length && tok.text.trim() !== '') {
                 lines.push(line);
                 line = [];
                 width = 0;
               }
-              if (!(line.length === 0 && word.text.trim() === '')) {
-                line.push(word);
+              if (!(line.length === 0 && tok.kind === 'space')) {
+                line.push({ ...tok, w });
                 width += w;
               }
             });
@@ -479,10 +584,12 @@
         const ensureSpace = (height) => {
           if (y + height > PAGE_H - MARGIN) {
             doc.addPage();
+            paintPageBackground();
             y = MARGIN;
           }
         };
 
+        paintPageBackground();
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(16);
         doc.setTextColor(0);
@@ -495,6 +602,8 @@
         y += 34;
 
         const sessions = historyData.history.filter(h => h.content && h.content.length);
+        let renderedCount = 0;
+        const totalCount = sessions.reduce((n, s) => n + (s.content ? s.content.length : 0), 0);
 
         for (let s = 0; s < sessions.length; s++) {
           const chat = sessions[s];
@@ -519,7 +628,6 @@
             y += 20;
           }
 
-          // Pre-render avatars for this session's participants
           const avatarCache = new Map();
           await Promise.all((chat.participants || []).map(async (p) => {
             if (p.avatar) {
@@ -530,7 +638,9 @@
           const humanPlaceholder = solidCircle('#5157cf', CANVAS_PX);
           const charPlaceholder = solidCircle('#e20909', CANVAS_PX);
 
-          (chat.content || []).forEach((msg) => {
+          const content = chat.content || [];
+          for (let i = 0; i < content.length; i++) {
+            const msg = content[i];
             const p = (chat.participants || []).find(pp => pp.id === msg.author);
             const name = p ? p.name : "Unknown";
             const isHuman = p ? !!p.is_human : false;
@@ -544,9 +654,7 @@
             const avImg = avatarCache.get(msg.author) || (isHuman ? humanPlaceholder : charPlaceholder);
             try { doc.addImage(avImg, 'PNG', MARGIN, y, AVATAR_SIZE, AVATAR_SIZE); } catch (e) { }
 
-            const bubbleColorHex = isHuman ? '#eef0ff' : PALETTE[msg.author % PALETTE.length];
-            doc.setFillColor(...hexToRgb(bubbleColorHex));
-            doc.roundedRect(BUBBLE_X, y, BUBBLE_MAX_W, bubbleHeight, 6, 6, 'F');
+            drawBubble(BUBBLE_X, y, BUBBLE_MAX_W, bubbleHeight);
 
             doc.setFont('helvetica', 'bold');
             doc.setFontSize(9);
@@ -557,18 +665,33 @@
             let ly = y + BUBBLE_PADDING + NAME_HEIGHT + NAME_TO_TEXT_GAP - 4;
             lines.forEach((line) => {
               let lx = BUBBLE_X + BUBBLE_PADDING;
-              line.forEach((word) => {
-                doc.setFont('helvetica', word.style === 'normal' ? 'normal' : word.style);
-                doc.setTextColor(STYLE_COLOR[word.style]);
-                doc.text(word.text, lx, ly);
-                lx += doc.getTextWidth(word.text);
+              line.forEach((tok) => {
+                if (tok.kind === 'emoji') {
+                  const img = getEmojiImage(tok.text);
+                  if (img) {
+                    try { doc.addImage(img, 'PNG', lx, ly - EMOJI_SIZE * 0.82, EMOJI_SIZE, EMOJI_SIZE); } catch (e) { }
+                  }
+                } else {
+                  doc.setFont('helvetica', tok.style === 'normal' ? 'normal' : tok.style);
+                  doc.setTextColor(STYLE_COLOR[tok.style]);
+                  doc.text(tok.text, lx, ly);
+                }
+                lx += tok.w;
               });
               ly += LINE_HEIGHT;
             });
             doc.setTextColor(0);
 
             y += blockHeight;
-          });
+            renderedCount++;
+
+            // Yield to the browser periodically so a big single chat doesn't
+            // trigger an "unresponsive page" warning while rendering.
+            if (renderedCount % 30 === 0) {
+              if (onProgress) onProgress(`Rendering PDF… (${renderedCount}/${totalCount} messages)`);
+              await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+          }
         }
 
         const blob = doc.output('blob');
